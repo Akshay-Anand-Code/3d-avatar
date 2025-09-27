@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState } from "react";
 
-const backendUrl = import.meta.env.VITE_API_URL || "https://threed-ai-avatar-backend.onrender.com";
-
+//const backendUrl = "https://threedaiavatar-b89738ee41c0.herokuapp.com";
+// In useChat.jsx, temporarily change:
+const backendUrl = "https://cors-anywhere.herokuapp.com/https://threedaiavatar-b89738ee41c0.herokuapp.com";
 const ChatContext = createContext();
 
 export const ChatProvider = ({ children }) => {
