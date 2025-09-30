@@ -187,9 +187,10 @@ export function Avatar(props) {
   const [facialExpression, setFacialExpression] = useState("");
   const [audio, setAudio] = useState();
 
-  useFrame(() => {
+  useFrame((state) => {
     // Only apply morph targets if the model has them
-    if (nodes.EyeLeft && nodes.EyeLeft.morphTargetDictionary) {
+    const hasMorphTargets = nodes.EyeLeft && nodes.EyeLeft.morphTargetDictionary;
+    if (hasMorphTargets) {
       !setupMode &&
         Object.keys(nodes.EyeLeft.morphTargetDictionary).forEach((key) => {
           const mapping = facialExpressions[facialExpression];
@@ -205,6 +206,23 @@ export function Avatar(props) {
 
       lerpMorphTarget("eyeBlinkLeft", blink || winkLeft ? 1 : 0, 0.5);
       lerpMorphTarget("eyeBlinkRight", blink || winkRight ? 1 : 0, 0.5);
+    } else {
+      // Fallback procedural animation when model has no morph targets
+      // Subtle idle sway
+      if (group.current) {
+        const t = state.clock.getElapsedTime();
+        const idleIntensity = 0.03;
+        group.current.rotation.x = Math.sin(t * 0.6) * idleIntensity;
+        group.current.rotation.y = Math.sin(t * 0.4) * idleIntensity;
+        group.current.position.y = Math.sin(t * 0.8) * 0.02;
+
+        // Emphasize motion while "speaking"
+        if (message) {
+          const talkIntensity = 0.06;
+          group.current.rotation.x += Math.sin(t * 4.0) * talkIntensity;
+          group.current.position.y += Math.abs(Math.sin(t * 6.0)) * 0.015;
+        }
+      }
     }
 
     // LIPSYNC
@@ -228,12 +246,14 @@ export function Avatar(props) {
       }
     }
 
-    Object.values(corresponding).forEach((value) => {
-      if (appliedMorphTargets.includes(value)) {
-        return;
-      }
-      lerpMorphTarget(value, 0, 0.1);
-    });
+    if (hasMorphTargets) {
+      Object.values(corresponding).forEach((value) => {
+        if (appliedMorphTargets.includes(value)) {
+          return;
+        }
+        lerpMorphTarget(value, 0, 0.1);
+      });
+    }
   });
 
   useControls("FacialExpressions", {
