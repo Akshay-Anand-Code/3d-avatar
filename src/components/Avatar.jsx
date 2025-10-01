@@ -6,7 +6,7 @@ Command: npx gltfjsx@6.2.3 public/models/64f1a714fe61576b46f27ca2.glb -o src/com
 import { useAnimations, useGLTF } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { button, useControls } from "leva";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import * as THREE from "three";
 import { useChat } from "../hooks/useChat";
@@ -139,20 +139,65 @@ export function Avatar(props) {
     audio.onended = onMessagePlayed;
   }, [message]);
 
+  // One-time: dump all node names to help target bones/nodes in custom models
+  useEffect(() => {
+    try {
+      const names = [];
+      scene.traverse((o) => {
+        if (o && o.name) names.push(o.name);
+      });
+      const sorted = names.sort();
+      console.log("All model nodes (sorted):", sorted);
+      // Expose helper to re-run manually from DevTools
+      // Usage: window.dumpNodes()
+      window.dumpNodes = () => {
+        const n = [];
+        scene.traverse((o) => o?.name && n.push(o.name));
+        console.log("All model nodes (sorted):", n.sort());
+      };
+    } catch (e) {}
+  }, [scene]);
+
   const { animations } = useGLTF("/models/animations.glb");
 
   const group = useRef();
   const { actions, mixer } = useAnimations(animations, group);
+  const supportsExternalAnimations = useMemo(() => {
+    return (
+      !!scene.getObjectByName("RightFoot") ||
+      !!scene.getObjectByName("Armature") ||
+      !!scene.getObjectByName("Hips")
+    );
+  }, [scene]);
+
+  // Target actual bones from your custom rig for procedural motion
+  const headBone = useMemo(
+    () =>
+      scene.getObjectByName("spine011") ||
+      scene.getObjectByName("spine010") ||
+      scene.getObjectByName("spine009"),
+    [scene]
+  );
+  const chestBone = useMemo(
+    () =>
+      scene.getObjectByName("spine006") ||
+      scene.getObjectByName("spine005") ||
+      scene.getObjectByName("spine004"),
+    [scene]
+  );
+  const leftArm = useMemo(() => scene.getObjectByName("upper_armL"), [scene]);
+  const rightArm = useMemo(() => scene.getObjectByName("upper_armR"), [scene]);
   const [animation, setAnimation] = useState(
     animations.find((a) => a.name === "Idle") ? "Idle" : animations[0].name // Check if Idle animation exists otherwise use first animation
   );
   useEffect(() => {
+    if (!supportsExternalAnimations) return;
     actions[animation]
       .reset()
       .fadeIn(mixer.stats.actions.inUse === 0 ? 0 : 0.5)
       .play();
-    return () => actions[animation].fadeOut(0.5);
-  }, [animation]);
+    return () => actions[animation]?.fadeOut?.(0.5);
+  }, [animation, supportsExternalAnimations]);
 
   const lerpMorphTarget = (target, value, speed = 0.1) => {
     scene.traverse((child) => {
@@ -187,6 +232,11 @@ export function Avatar(props) {
   const [facialExpression, setFacialExpression] = useState("");
   const [audio, setAudio] = useState();
 
+  // Helpers derived from backend control signals
+  const gesture = message?.gesture || "idle";
+  const energy = Math.min(1, Math.max(0, message?.intensity ?? 0.5));
+  const tempo = Math.min(1, Math.max(0, message?.tempo ?? 0.5));
+
   useFrame((state) => {
     // Only apply morph targets if the model has them
     const hasMorphTargets = nodes.EyeLeft && nodes.EyeLeft.morphTargetDictionary;
@@ -211,16 +261,89 @@ export function Avatar(props) {
       // Subtle idle sway
       if (group.current) {
         const t = state.clock.getElapsedTime();
-        const idleIntensity = 0.03;
-        group.current.rotation.x = Math.sin(t * 0.6) * idleIntensity;
-        group.current.rotation.y = Math.sin(t * 0.4) * idleIntensity;
-        group.current.position.y = Math.sin(t * 0.8) * 0.02;
+        const idleIntensity = 0.02 + energy * 0.02; // scale with energy
+        // body sway
+        group.current.position.y = Math.sin(t * (0.7 + tempo * 0.6)) * 0.02;
+
+        // chest/torso gentle breathing
+        if (chestBone) {
+          chestBone.rotation.z = Math.sin(t * 0.6) * idleIntensity;
+          chestBone.rotation.x = Math.sin(t * 0.5) * idleIntensity;
+        } else {
+          group.current.rotation.y = Math.sin(t * 0.4) * idleIntensity;
+        }
+
+        // head look/nod
+        if (headBone) {
+          headBone.rotation.y = Math.sin(t * (0.6 + tempo * 0.8)) * (idleIntensity * 1.2);
+        }
 
         // Emphasize motion while "speaking"
         if (message) {
-          const talkIntensity = 0.06;
-          group.current.rotation.x += Math.sin(t * 4.0) * talkIntensity;
+          const talkIntensity = 0.03 + energy * 0.06;
+          if (headBone) {
+            headBone.rotation.x = Math.sin(t * (3.0 + tempo * 3.0)) * talkIntensity;
+          } else {
+            group.current.rotation.x += Math.sin(t * (3.0 + tempo * 3.0)) * talkIntensity;
+          }
           group.current.position.y += Math.abs(Math.sin(t * 6.0)) * 0.015;
+
+          // Gesture presets
+          if (leftArm && rightArm) {
+            switch (gesture) {
+              case "explain": {
+                const a = Math.sin(t * (2.0 + tempo * 2.5)) * (0.15 * energy);
+                leftArm.rotation.z = -Math.abs(a);
+                rightArm.rotation.z = Math.abs(a);
+                break;
+              }
+              case "agree": {
+                const a = Math.sin(t * (2.5 + tempo * 3.0)) * (0.12 * energy);
+                if (headBone) headBone.rotation.x += Math.abs(a) * 0.6;
+                leftArm.rotation.y = a * 0.5;
+                rightArm.rotation.y = -a * 0.5;
+                break;
+              }
+              case "disagree": {
+                const a = Math.sin(t * (2.2 + tempo * 2.2)) * (0.18 * energy);
+                if (headBone) headBone.rotation.y += a;
+                leftArm.rotation.x = a * 0.3;
+                rightArm.rotation.x = -a * 0.3;
+                break;
+              }
+              case "point": {
+                // Raise right arm; small oscillation
+                rightArm.rotation.x = -0.6 * energy + Math.sin(t * (1.5 + tempo * 2.0)) * 0.05;
+                rightArm.rotation.z = 0.15 * energy;
+                break;
+              }
+              case "count": {
+                const a = Math.abs(Math.sin(t * (2.8 + tempo * 2.0))) * (0.14 * energy);
+                leftArm.rotation.z = -a;
+                rightArm.rotation.z = a;
+                break;
+              }
+              case "delight": {
+                const a = Math.abs(Math.sin(t * (3.2 + tempo * 3.0))) * (0.16 * energy);
+                if (headBone) headBone.rotation.x += a * 0.6;
+                leftArm.rotation.z = -a * 0.8;
+                rightArm.rotation.z = a * 0.8;
+                break;
+              }
+              case "shrug": {
+                const a = Math.abs(Math.sin(t * (1.8 + tempo * 1.5))) * (0.12 * energy);
+                leftArm.rotation.x = a * 0.4;
+                rightArm.rotation.x = a * 0.4;
+                break;
+              }
+              default: {
+                // idle micro-gestures
+                const a = Math.sin(t * (2.2 + tempo * 1.5)) * (0.1 * energy);
+                leftArm.rotation.z = -Math.abs(a);
+                rightArm.rotation.z = Math.abs(a);
+              }
+            }
+          }
         }
       }
     }
